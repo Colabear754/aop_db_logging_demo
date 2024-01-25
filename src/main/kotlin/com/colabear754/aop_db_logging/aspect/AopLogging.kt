@@ -1,0 +1,50 @@
+package com.colabear754.aop_db_logging.aspect
+
+import com.colabear754.aop_db_logging.log.entity.ApiLog
+import com.colabear754.aop_db_logging.log.repository.ApiLogRepository
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.aspectj.lang.ProceedingJoinPoint
+import org.aspectj.lang.annotation.Around
+import org.aspectj.lang.annotation.Aspect
+import org.aspectj.lang.reflect.MethodSignature
+import org.springframework.http.ResponseEntity
+import org.springframework.stereotype.Component
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
+import java.net.InetAddress
+import java.time.LocalDateTime
+
+@Aspect
+@Component
+class AopLogging(
+    private val apiLogRepository: ApiLogRepository,
+    private val objectMapper: ObjectMapper = ObjectMapper()
+) {
+    @Around("execution(public * com.colabear754.aop_db_logging.controllers.*.*(..))")
+    fun log(joinPoint: ProceedingJoinPoint): Any? {
+        val requestAttributes = RequestContextHolder.currentRequestAttributes() as ServletRequestAttributes
+        val httpRequest = requestAttributes.request
+        val log = apiLogRepository.save(
+            ApiLog(
+                serverIp = InetAddress.getLocalHost().hostAddress,
+                requestUrl = httpRequest.requestURL.toString(),
+                requestMethod = httpRequest.method,
+                clientIp = httpRequest.getHeader("X-FORWARDED-FOR")?.takeUnless { it.isBlank() } ?: httpRequest.remoteAddr,
+                request = getRequestString(joinPoint),
+                requestTime = LocalDateTime.now()
+            ))
+        val response = joinPoint.proceed() as ResponseEntity<*>
+        val responseStatus = response.statusCode.value()
+        val responseBody = objectMapper.writeValueAsString(response.body)
+        log.receiveResponse(responseStatus, responseBody)
+
+        return response
+    }
+
+    private fun getRequestString(joinPoint: ProceedingJoinPoint): String {
+        val signature = joinPoint.signature
+        val parameterNames = if (signature is MethodSignature) signature.parameterNames else return ""
+        val parameterValues = joinPoint.args
+        return parameterNames.zip(parameterValues).joinToString(", ") { "${it.first}=${it.second}" }
+    }
+}
